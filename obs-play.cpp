@@ -4,6 +4,7 @@
 #include <obs-module.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include "libdeepseg.h"
 
 // Demo setting name & default value
 static const char DEMO_SETTING[] = "DemoSetting";
@@ -23,7 +24,7 @@ OBS_DECLARE_MODULE()
 // A source, used as a filter..
 struct obs_play_filter_t {
     // internal filter state
-    float last_tick;
+    calcinfo_t info;
     // filter settings
     int setting;
 };
@@ -34,8 +35,19 @@ static void *obs_play_create(obs_data_t *settings, obs_source_t *source) {
     // here we instantiate a new filter, loading all required resources (eg: model file)
     // and setting initial values for filter settings
     auto *filter = new obs_play_filter_t;
-    filter->last_tick = 0;
     filter->setting = _obs_play_get_setting(settings);
+    filter->info.modelname = "/home/phlash/code/deepbacksub/models/selfiesegmentation_mlkit-256x256-2021_01_19-v1215.f16.tflite";
+    filter->info.threads = 2;
+    filter->info.width = 640;
+    filter->info.height = 480;
+    filter->info.debug = 1;
+    filter->info.onprep = filter->info.oninfer = filter->info.onmask = NULL;
+    filter->info.caller_ctx = NULL;
+    if (!init_tensorflow(filter->info)) {
+        op_printf("oops initialising Tensorflow\n");
+        delete filter;
+        filter = NULL;
+    }
     return filter;
 }
 static obs_properties_t *obs_play_get_properties(void *state) {
@@ -56,12 +68,45 @@ static void obs_play_update(void *state, obs_data_t *settings) {
     filter->setting = val;
 }
 static void obs_play_destroy(void *state) { delete (obs_play_filter_t *)state; }
-static void obs_play_video_tick(void *state, float secs) { ((obs_play_filter_t *)state)->last_tick = secs; }
-static obs_source_frame *obs_play_filter_video(void *state, obs_source_frame *input) {
+static void obs_play_video_tick(void *state, float secs) { }
+static obs_source_frame *obs_play_filter_video(void *state, obs_source_frame *frame) {
+    obs_play_filter_t *filter = (obs_play_filter_t *)state;
     // here we do the video frame processing
-    if (getenv("OBSPLAY_VERBOSE")!= NULL)
-        op_printf("filter_video@%f\n", ((obs_play_filter_t *)state)->last_tick);
-    return input;
+    // First, map data into an OpenCV Mat object, then convert to BGR24 (default OCV format)
+    // for calling libdeepseg
+    switch (frame->format) {
+    // TODO: more video formats!
+    case VIDEO_FORMAT_YUY2:
+    {
+        // YUV2 (https://www.fourcc.org/pixel-format/yuv-yuy2/) as OpenCV array is 2x8bit channels
+        // in OBS it arrives as a single plane of 16bits/pixel
+        cv::Mat obs(frame->height, frame->width, CV_8UC2, frame->data[0], frame->linesize[0]);
+        cv::cvtColor(obs, filter->info.raw, CV_YUV2BGR_YUY2);
+        break;
+    }
+    default:
+        op_printf("filter_video: unsupported frame format: %s\n", get_video_format_name(frame->format));
+        return frame;
+    }
+    // Infer the new mask
+    calc_mask(filter->info);
+    // Re-size back to OBS video if required
+    cv::Mat out = filter->info.mask.clone();
+    if (frame->width != filter->info.width || frame->height != filter->info.height)
+        cv::resize(out, out, cv::Size(frame->width, frame->height));
+    // Mask the video image, leave the human, green screen the rest
+    // feather the edges of the mask.
+    for (int row=0; row<out.rows; row+=1) {
+        uint8_t *prow = frame->data[0] + frame->linesize[0]*row;
+        for (int col=0; col<out.cols; col+=1) {
+            int m = (int)(*(out.ptr(row, col)));
+            int h = 255-m;
+            prow[2*col] = (uint8_t)((int)(prow[2*col])*h/255+m);
+            if (!h)
+                prow[2*col+1] = 0;  // U=V=0 => green
+        }
+    }
+    return frame;
 }
 static struct obs_source_info play_src {
     // required
