@@ -1,6 +1,9 @@
 // Playing with OBS plugins..
 //
 //
+#include <thread>
+#include <mutex>
+#include <condition_variable>
 #include <obs-module.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -25,9 +28,37 @@ OBS_DECLARE_MODULE()
 struct obs_play_filter_t {
     // internal filter state
     calcinfo_t info;
+    cv::Mat input;
+    cv::Mat mask;
+    std::thread tid;
+    std::mutex lock;
+    std::condition_variable_any cond;
+    bool new_frame;
+    bool done;
     // filter settings
     int setting;
 };
+static void obs_play_mask_thread(obs_play_filter_t *filter) {
+    op_printf("mask_thread: starting..\n");
+    while (!filter->done) {
+        // wait for a fresh video frame
+        {
+            std::lock_guard<std::mutex> hold(filter->lock);
+            while (!filter->new_frame)
+                filter->cond.wait(filter->lock);
+            filter->new_frame = false;
+            filter->info.raw = filter->input.clone();
+        }
+        // run inference
+        calc_mask(filter->info);
+        // update mask
+        {
+            std::lock_guard<std::mutex> hold(filter->lock);
+            filter->mask = filter->info.mask.clone();
+        }
+    }
+    op_printf("mask_thread: done\n");
+}
 static int _obs_play_get_setting(obs_data_t *settings) { return (int)obs_data_get_int(settings, DEMO_SETTING); }
 static const char *obs_play_get_name(void *type_data) { return "Phlash playing about"; }
 static void *obs_play_create(obs_data_t *settings, obs_source_t *source) {
@@ -48,6 +79,9 @@ static void *obs_play_create(obs_data_t *settings, obs_source_t *source) {
         delete filter;
         filter = NULL;
     }
+    filter->new_frame = false;
+    filter->done = false;
+    filter->tid = std::thread(obs_play_mask_thread, filter);
     return filter;
 }
 static obs_properties_t *obs_play_get_properties(void *state) {
@@ -67,13 +101,23 @@ static void obs_play_update(void *state, obs_data_t *settings) {
     // here we change any filter settings (eg: model used, feathering edges, bilateral smoothing)
     filter->setting = val;
 }
-static void obs_play_destroy(void *state) { delete (obs_play_filter_t *)state; }
+static void obs_play_destroy(void *state) {
+    obs_play_filter_t *filter = (obs_play_filter_t *)state;
+    // stop mask thread
+    filter->done = true;
+    filter->new_frame = true;
+    filter->cond.notify_one();
+    filter->tid.join();
+    // free memory
+    delete filter;
+}
 static void obs_play_video_tick(void *state, float secs) { }
 static obs_source_frame *obs_play_filter_video(void *state, obs_source_frame *frame) {
     obs_play_filter_t *filter = (obs_play_filter_t *)state;
     // here we do the video frame processing
     // First, map data into an OpenCV Mat object, then convert to BGR24 (default OCV format)
     // for calling libdeepseg
+    cv::Mat out;
     switch (frame->format) {
     // TODO: more video formats!
     case VIDEO_FORMAT_YUY2:
@@ -81,17 +125,22 @@ static obs_source_frame *obs_play_filter_video(void *state, obs_source_frame *fr
         // YUV2 (https://www.fourcc.org/pixel-format/yuv-yuy2/) as OpenCV array is 2x8bit channels
         // in OBS it arrives as a single plane of 16bits/pixel
         cv::Mat obs(frame->height, frame->width, CV_8UC2, frame->data[0], frame->linesize[0]);
-        cv::cvtColor(obs, filter->info.raw, CV_YUV2BGR_YUY2);
+        std::lock_guard<std::mutex> hold(filter->lock);
+        cv::cvtColor(obs, filter->input, CV_YUV2BGR_YUY2);
+        filter->new_frame = true;
+        filter->cond.notify_one();
+        // while we have the lock, grab current mask (if any)
+        out = filter->info.mask.clone();
         break;
     }
     default:
         op_printf("filter_video: unsupported frame format: %s\n", get_video_format_name(frame->format));
         return frame;
     }
-    // Infer the new mask
-    calc_mask(filter->info);
+    // No mask yet?
+    if (out.empty())
+        return frame;
     // Re-size back to OBS video if required
-    cv::Mat out = filter->info.mask.clone();
     if (frame->width != filter->info.width || frame->height != filter->info.height)
         cv::resize(out, out, cv::Size(frame->width, frame->height));
     // Mask the video image, leave the human, green screen the rest
