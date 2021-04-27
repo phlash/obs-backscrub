@@ -1,2 +1,5 @@
 # build output
 build/
+
+# IDE cruft
+.vscode/

@@ -67,7 +67,7 @@ static void *obs_play_create(obs_data_t *settings, obs_source_t *source) {
     // and setting initial values for filter settings
     auto *filter = new obs_play_filter_t;
     filter->setting = _obs_play_get_setting(settings);
-    filter->info.modelname = "/home/phlash/code/deepbacksub/models/selfiesegmentation_mlkit-256x256-2021_01_19-v1215.f16.tflite";
+    filter->info.modelname = "/home/phlash/code/backscrub/models/selfiesegmentation_mlkit-256x256-2021_01_19-v1215.f16.tflite";
     filter->info.threads = 2;
     filter->info.width = 640;
     filter->info.height = 480;

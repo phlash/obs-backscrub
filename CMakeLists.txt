@@ -6,8 +6,8 @@ project (obs-play)
 find_package(LibObs REQUIRED)
 find_package(OpenCV REQUIRED)
 
-set(LIBDEEPSEG_LIBRARY ../deepbacksub/bin/libdeepseg.a)
-set(LIBDEEPSEG_INCLUDE_DIR ../deepbacksub)
+set(LIBDEEPSEG_LIBRARY ../backscrub/bin/libdeepseg.a)
+set(LIBDEEPSEG_INCLUDE_DIR ../backscrub)
 
 set(obs-play_SOURCES
         obs-play.cpp)
