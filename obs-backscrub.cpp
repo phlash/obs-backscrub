@@ -9,9 +9,9 @@
 #include <stdarg.h>
 #include "libbackscrub.h"
 
-// Demo setting name & default value
-static const char DEMO_SETTING[] = "DemoSetting";
-static const int DEMO_DEFAULT = 1;
+// Setting names & default values
+static const char MODEL_SETTING[] = "Segmentation model";
+static const char MODEL_DEFAULT[] = "selfiesegmentation_mlkit-256x256-2021_01_19-v1215.f16.tflite";
 
 // debugging
 void op_printf(const char *fmt, ...) {
@@ -35,8 +35,7 @@ struct obs_backscrub_filter_t {
     std::condition_variable_any cond;
     bool new_frame;
     bool done;
-    // filter settings
-    int setting;
+    // additional blend settings
 };
 static void obs_backscrub_mask_thread(obs_backscrub_filter_t *filter) {
     op_printf("mask_thread: starting..\n");
@@ -59,15 +58,24 @@ static void obs_backscrub_mask_thread(obs_backscrub_filter_t *filter) {
     }
     op_printf("mask_thread: done\n");
 }
-static int _obs_backscrub_get_setting(obs_data_t *settings) { return (int)obs_data_get_int(settings, DEMO_SETTING); }
+static const char * _obs_backscrub_get_model(obs_data_t *settings) { return obs_data_get_string(settings, MODEL_SETTING); }
+static const char * _obs_backscrub_get_path(const char *file) {
+    // absolute paths return as-is
+    const char *rv = file;
+    // relative paths, map through module location
+    if (file[0]!='/')
+        rv = obs_module_file(file);
+    if (!rv)
+        op_printf("_get_path: NULL file mapping, maybe missing module data folder?\n");
+    return rv;
+}
 static const char *obs_backscrub_get_name(void *type_data) { return "Background scrubber"; }
 static void *obs_backscrub_create(obs_data_t *settings, obs_source_t *source) {
     op_printf("create\n");
     // here we instantiate a new filter, loading all required resources (eg: model file)
     // and setting initial values for filter settings
     auto *filter = new obs_backscrub_filter_t;
-    filter->setting = _obs_backscrub_get_setting(settings);
-    filter->info.modelname = "/home/phlash/code/backscrub/models/selfiesegmentation_mlkit-256x256-2021_01_19-v1215.f16.tflite";
+    filter->info.modelname = _obs_backscrub_get_path(_obs_backscrub_get_model(settings));
     filter->info.threads = 2;
     filter->info.width = 640;
     filter->info.height = 480;
@@ -84,22 +92,38 @@ static void *obs_backscrub_create(obs_data_t *settings, obs_source_t *source) {
     filter->tid = std::thread(obs_backscrub_mask_thread, filter);
     return filter;
 }
+static void obs_backscrub_get_defaults(obs_data_t *settings) {
+    op_printf("get_defaults\n");
+    obs_data_set_default_string(settings, MODEL_SETTING, MODEL_DEFAULT);
+}
 static obs_properties_t *obs_backscrub_get_properties(void *state) {
     op_printf("get_properties\n");
     obs_properties_t *props = obs_properties_create();
-    obs_properties_add_int_slider(props, DEMO_SETTING, "Demonstration setting", -127, 127, 1);
+    obs_properties_add_path(props, MODEL_SETTING, "Segmentation model file", OBS_PATH_FILE,
+        "TFLite models (*.tflite)", MODEL_DEFAULT);
     return props;
-}
-static void obs_backscrub_get_defaults(obs_data_t *settings) {
-    op_printf("get_defaults\n");
-    obs_data_set_default_int(settings, DEMO_SETTING, DEMO_DEFAULT);
 }
 static void obs_backscrub_update(void *state, obs_data_t *settings) {
     obs_backscrub_filter_t *filter = (obs_backscrub_filter_t *)state;
-    int val = _obs_backscrub_get_setting(settings);
-    op_printf("update: settings=%d->%d\n", filter->setting, val);
+    const char *model = _obs_backscrub_get_model(settings);
+    op_printf("update: model=%s=>%s\n", filter->info.modelname, model);
     // here we change any filter settings (eg: model used, feathering edges, bilateral smoothing)
-    filter->setting = val;
+    if (strcmp(model, filter->info.modelname)) {
+        // stop mask thread
+        filter->done = true;
+        filter->new_frame = true;
+        filter->cond.notify_one();
+        filter->tid.join();
+        // re-init Tensorflow and start thread again
+        filter->info.modelname = _obs_backscrub_get_path(model);
+        if (!init_tensorflow(filter->info)) {
+            op_printf("oops re-initialising Tensorflow\n");
+            return;
+        }
+        filter->new_frame = false;
+        filter->done = false;
+        filter->tid = std::thread(obs_backscrub_mask_thread, filter);
+    }
 }
 static void obs_backscrub_destroy(void *state) {
     obs_backscrub_filter_t *filter = (obs_backscrub_filter_t *)state;
@@ -166,7 +190,7 @@ static struct obs_source_info backscrub_src {
     .create = obs_backscrub_create,                  // new instance of this filter
     .destroy = obs_backscrub_destroy,                // delete filter instance
     // optional
-    .get_defaults = obs_backscrub_get_defaults,      // gets default values of properties (settings)
+    .get_defaults = obs_backscrub_get_defaults,      // set default property values
     .get_properties = obs_backscrub_get_properties,  // defines user-adjustable properties (settings)
     .update = obs_backscrub_update,                  // change the filter settings
     .video_tick = obs_backscrub_video_tick,          // frame duration supplied (not absolute time)
