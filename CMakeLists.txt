@@ -5,9 +5,11 @@ project (obs-play)
 
 find_package(LibObs REQUIRED)
 find_package(OpenCV REQUIRED)
+find_package(Threads REQUIRED)
 
-set(LIBDEEPSEG_LIBRARY ../backscrub/bin/libbackscrub.a)
-set(LIBDEEPSEG_INCLUDE_DIR ../backscrub)
+# Pull in backscrub and dependencies
+include(../backscrub/build/BackscrubTargets.cmake)
+set(LIBBACKSCRUB_INCLUDE_DIR ../backscrub)
 
 set(obs-backscrub_SOURCES
         obs-backscrub.cpp)
@@ -18,10 +20,9 @@ add_library(obs-backscrub MODULE
 set_target_properties(obs-backscrub PROPERTIES PREFIX "")
 
 target_include_directories(obs-backscrub
-        PUBLIC ${LIBDEEPSEG_INCLUDE_DIR})
+		PUBLIC ${LIBBACKSCRUB_INCLUDE_DIR})
 
-get_filename_component(LIBDEEPSEG_ABS_LIB ${LIBDEEPSEG_LIBRARY} ABSOLUTE)
 target_link_libraries(obs-backscrub
         ${LIBOBS_LIBRARIES}
-        ${LIBDEEPSEG_ABS_LIB}
+		backscrub
         ${OpenCV_LIBS})
