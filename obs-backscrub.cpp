@@ -6,23 +6,28 @@
 #include <condition_variable>
 #include <obs-module.h>
 #include <stdio.h>
-#include <stdarg.h>
-#include "libbackscrub.h"
+#include "lib/libbackscrub.h"
 
 // Setting names & default values
 static const char MODEL_SETTING[] = "Segmentation model";
 static const char MODEL_DEFAULT[] = "selfiesegmentation_mlkit-256x256-2021_01_19-v1215.f16.tflite";
+static const size_t BS_THREADS = 2;
+static const size_t BS_WIDTH = 640;
+static const size_t BS_HEIGHT = 480;
 
 // debugging
-void obs_backscrub_dbg(void *ctx, const char *fmt, va_list ap) {
-    printf("obs-backscrub: ");
-    vprintf(fmt, ap);
+void obs_backscrub_dbg(void *ctx, const char *msg) {
+    printf("obs-backscrub: %s", msg);
     fflush(stdout);
 }
 void obs_printf(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    obs_backscrub_dbg(nullptr, fmt, ap);
+    char *msg;
+    if (vasprintf(&msg, fmt, ap)>0) {
+        obs_backscrub_dbg(nullptr, msg);
+        free(msg);
+    }
     va_end(ap);
 }
 
@@ -31,7 +36,10 @@ OBS_DECLARE_MODULE()
 // A source, used as a filter..
 struct obs_backscrub_filter_t {
     // internal filter state
-    calcinfo_t info;
+    void *maskctx;
+    char *modelname;
+    size_t width;
+    size_t height;
     cv::Mat input;
     cv::Mat mask;
     std::thread tid;
@@ -42,25 +50,30 @@ struct obs_backscrub_filter_t {
     // additional blend settings
 };
 static void obs_backscrub_mask_thread(obs_backscrub_filter_t *filter) {
-    obs_printf("mask_thread: starting..\n");
+    obs_printf("mask_thread(%p): starting..\n", filter);
     while (!filter->done) {
         // wait for a fresh video frame
+        cv::Mat frame;
         {
             std::lock_guard<std::mutex> hold(filter->lock);
             while (!filter->new_frame)
                 filter->cond.wait(filter->lock);
             filter->new_frame = false;
-            filter->info.raw = filter->input.clone();
+            frame = filter->input.clone();
         }
+        // check for empty frame (can happen if we are terminated before video starts)
+        if (frame.empty())
+            continue;
         // run inference
-        calc_mask(filter->info);
+        cv::Mat mask;
+        bs_maskgen_process(filter->maskctx, frame, mask);
         // update mask
         {
             std::lock_guard<std::mutex> hold(filter->lock);
-            filter->mask = filter->info.mask.clone();
+            filter->mask = mask;
         }
     }
-    obs_printf("mask_thread: done\n");
+    obs_printf("mask_thread(%p): done\n", filter);
 }
 static const char * _obs_backscrub_get_model(obs_data_t *settings) { return obs_data_get_string(settings, MODEL_SETTING); }
 static const char * _obs_backscrub_get_path(const char *file) {
@@ -75,27 +88,24 @@ static const char * _obs_backscrub_get_path(const char *file) {
 }
 static const char *obs_backscrub_get_name(void *type_data) { return "Background scrubber"; }
 static void *obs_backscrub_create(obs_data_t *settings, obs_source_t *source) {
-    obs_printf("create\n");
     // here we instantiate a new filter, loading all required resources (eg: model file)
     // and setting initial values for filter settings
     auto *filter = new obs_backscrub_filter_t;
-    filter->info.modelname = strdup(_obs_backscrub_get_path(_obs_backscrub_get_model(settings)));
-    filter->info.threads = 2;
-    filter->info.width = 640;
-    filter->info.height = 480;
-    filter->info.debug = 1;
-    filter->info.ondebug = obs_backscrub_dbg;
-    filter->info.onprep = filter->info.oninfer = filter->info.onmask = NULL;
-    filter->info.caller_ctx = NULL;
-    filter->info.backscrub_ctx = NULL;
-    if (!init_tensorflow(filter->info)) {
-        obs_printf("oops initialising Tensorflow\n");
+    obs_printf("create(%p)\n", filter);
+    filter->modelname = strdup(_obs_backscrub_get_path(_obs_backscrub_get_model(settings)));
+    filter->width = BS_WIDTH;
+    filter->height = BS_HEIGHT;
+    filter->maskctx = bs_maskgen_new(filter->modelname, BS_THREADS, filter->width, filter->height,
+        obs_backscrub_dbg, nullptr, nullptr, nullptr, nullptr);
+    if (!filter->maskctx) {
+        obs_printf("oops initialising backscrub\n");
         delete filter;
         filter = NULL;
     }
     filter->new_frame = false;
     filter->done = false;
     filter->tid = std::thread(obs_backscrub_mask_thread, filter);
+    obs_printf("create(%p): done\n", filter);
     return filter;
 }
 static void obs_backscrub_get_defaults(obs_data_t *settings) {
@@ -112,39 +122,43 @@ static obs_properties_t *obs_backscrub_get_properties(void *state) {
 static void obs_backscrub_update(void *state, obs_data_t *settings) {
     obs_backscrub_filter_t *filter = (obs_backscrub_filter_t *)state;
     const char *model = _obs_backscrub_get_model(settings);
-    obs_printf("update: model: %s=>%s\n", filter->info.modelname, model);
+    obs_printf("update(%p): model: %s=>%s\n", filter, filter->modelname, model);
     // here we change any filter settings (eg: model used, feathering edges, bilateral smoothing)
-    if (strcmp(model, filter->info.modelname)) {
+    if (strcmp(model, filter->modelname)) {
         // stop mask thread
         filter->done = true;
         filter->new_frame = true;
         filter->cond.notify_one();
         filter->tid.join();
-        // re-init Tensorflow and start thread again
-        drop_tensorflow(filter->info);
-        free((char *)filter->info.modelname);
-        filter->info.modelname = strdup(_obs_backscrub_get_path(model));
-        if (!init_tensorflow(filter->info)) {
-            obs_printf("oops re-initialising Tensorflow\n");
+        // re-init backscrub and start thread again
+        bs_maskgen_delete(filter->maskctx);
+        free((char *)filter->modelname);
+        filter->modelname = strdup(_obs_backscrub_get_path(model));
+        filter->maskctx = bs_maskgen_new(filter->modelname, BS_THREADS, filter->width, filter->height,
+            obs_backscrub_dbg, nullptr, nullptr, nullptr, nullptr);
+        if (!filter->maskctx) {
+            obs_printf("oops re-initialising backscrub\n");
             return;
         }
         filter->new_frame = false;
         filter->done = false;
         filter->tid = std::thread(obs_backscrub_mask_thread, filter);
+        obs_printf("update(%p): done\n", filter);
     }
 }
 static void obs_backscrub_destroy(void *state) {
     obs_backscrub_filter_t *filter = (obs_backscrub_filter_t *)state;
-    obs_printf("destroy\n");
+    obs_printf("destroy(%p)\n", filter);
     // stop mask thread
     filter->done = true;
     filter->new_frame = true;
     filter->cond.notify_one();
     filter->tid.join();
     // free memory
-    drop_tensorflow(filter->info);
-    free((char *)filter->info.modelname);
+    bs_maskgen_delete(filter->maskctx);
+    free((char *)filter->modelname);
     delete filter;
+    obs_printf("destroy(%p): done\n", state);
 }
 static void obs_backscrub_video_tick(void *state, float secs) { }
 static obs_source_frame *obs_backscrub_filter_video(void *state, obs_source_frame *frame) {
@@ -161,15 +175,15 @@ static obs_source_frame *obs_backscrub_filter_video(void *state, obs_source_fram
         // in OBS it arrives as a single plane of 16bits/pixel
         cv::Mat obs(frame->height, frame->width, CV_8UC2, frame->data[0], frame->linesize[0]);
         // Re-size to backscrub if required
-        if (frame->width != filter->info.width || frame->height != filter->info.height)
-            cv::resize(obs, obs, cv::Size(filter->info.width, filter->info.height));
+        if (frame->width != filter->width || frame->height != filter->height)
+            cv::resize(obs, obs, cv::Size(filter->width, filter->height));
         // feed the mask thread
         std::lock_guard<std::mutex> hold(filter->lock);
         cv::cvtColor(obs, filter->input, CV_YUV2BGR_YUY2);
         filter->new_frame = true;
         filter->cond.notify_one();
         // while we have the lock, grab current mask (if any)
-        out = filter->info.mask.clone();
+        out = filter->mask.clone();
         break;
     }
     default:
@@ -180,7 +194,7 @@ static obs_source_frame *obs_backscrub_filter_video(void *state, obs_source_fram
     if (out.empty())
         return frame;
     // Re-size back to OBS video if required
-    if (frame->width != filter->info.width || frame->height != filter->info.height)
+    if (frame->width != filter->width || frame->height != filter->height)
         cv::resize(out, out, cv::Size(frame->width, frame->height));
     // Mask the video image, leave the human, green screen the rest
     // blend the edges of the mask.
