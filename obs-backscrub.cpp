@@ -16,16 +16,15 @@ static const size_t BS_WIDTH = 640;
 static const size_t BS_HEIGHT = 480;
 
 // debugging
-void obs_backscrub_dbg(void *ctx, const char *msg) {
-    printf("obs-backscrub: %s", msg);
-    fflush(stdout);
+static void obs_backscrub_dbg(void *ctx, const char *msg) {
+    blog(LOG_INFO, "obs-backscrub(%p): %s", ctx, msg);
 }
-void obs_printf(const char *fmt, ...) {
+static void obs_printf(void *ctx, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     char *msg;
-    if (vasprintf(&msg, fmt, ap)>0) {
-        obs_backscrub_dbg(nullptr, msg);
+    if (vasprintf(&msg, fmt, ap)) {
+        obs_backscrub_dbg(ctx, msg);
         free(msg);
     }
     va_end(ap);
@@ -50,7 +49,7 @@ struct obs_backscrub_filter_t {
     // additional blend settings
 };
 static void obs_backscrub_mask_thread(obs_backscrub_filter_t *filter) {
-    obs_printf("mask_thread(%p): starting..\n", filter);
+    obs_printf(filter, "mask_thread: starting..\n");
     while (!filter->done) {
         // wait for a fresh video frame
         cv::Mat frame;
@@ -73,7 +72,7 @@ static void obs_backscrub_mask_thread(obs_backscrub_filter_t *filter) {
             filter->mask = mask;
         }
     }
-    obs_printf("mask_thread(%p): done\n", filter);
+    obs_printf(filter, "mask_thread: done\n");
 }
 static const char * _obs_backscrub_get_model(obs_data_t *settings) { return obs_data_get_string(settings, MODEL_SETTING); }
 static const char * _obs_backscrub_get_path(const char *file) {
@@ -83,7 +82,7 @@ static const char * _obs_backscrub_get_path(const char *file) {
     if (file[0]!='/')
         rv = obs_module_file(file);
     if (!rv)
-        obs_printf("_get_path: NULL file mapping, maybe missing module data folder?\n");
+        obs_printf(nullptr, "_get_path: NULL file mapping, maybe missing module data folder?\n");
     return rv;
 }
 static const char *obs_backscrub_get_name(void *type_data) { return "Background scrubber"; }
@@ -91,29 +90,29 @@ static void *obs_backscrub_create(obs_data_t *settings, obs_source_t *source) {
     // here we instantiate a new filter, loading all required resources (eg: model file)
     // and setting initial values for filter settings
     auto *filter = new obs_backscrub_filter_t;
-    obs_printf("create(%p)\n", filter);
+    obs_printf(filter, "create\n");
     filter->modelname = strdup(_obs_backscrub_get_path(_obs_backscrub_get_model(settings)));
     filter->width = BS_WIDTH;
     filter->height = BS_HEIGHT;
     filter->maskctx = bs_maskgen_new(filter->modelname, BS_THREADS, filter->width, filter->height,
         obs_backscrub_dbg, nullptr, nullptr, nullptr, nullptr);
     if (!filter->maskctx) {
-        obs_printf("oops initialising backscrub\n");
+        obs_printf(filter, "oops initialising backscrub\n");
         delete filter;
         filter = NULL;
     }
     filter->new_frame = false;
     filter->done = false;
     filter->tid = std::thread(obs_backscrub_mask_thread, filter);
-    obs_printf("create(%p): done\n", filter);
+    obs_printf(filter, "create: done\n");
     return filter;
 }
 static void obs_backscrub_get_defaults(obs_data_t *settings) {
-    obs_printf("get_defaults\n");
+    obs_printf(nullptr, "get_defaults\n");
     obs_data_set_default_string(settings, MODEL_SETTING, MODEL_DEFAULT);
 }
 static obs_properties_t *obs_backscrub_get_properties(void *state) {
-    obs_printf("get_properties\n");
+    obs_printf(nullptr, "get_properties\n");
     obs_properties_t *props = obs_properties_create();
     obs_properties_add_path(props, MODEL_SETTING, "Segmentation model file", OBS_PATH_FILE,
         "TFLite models (*.tflite)", MODEL_DEFAULT);
@@ -122,7 +121,7 @@ static obs_properties_t *obs_backscrub_get_properties(void *state) {
 static void obs_backscrub_update(void *state, obs_data_t *settings) {
     obs_backscrub_filter_t *filter = (obs_backscrub_filter_t *)state;
     const char *model = _obs_backscrub_get_model(settings);
-    obs_printf("update(%p): model: %s=>%s\n", filter, filter->modelname, model);
+    obs_printf(filter, "update: model: %s=>%s\n", filter->modelname, model);
     // here we change any filter settings (eg: model used, feathering edges, bilateral smoothing)
     if (strcmp(model, filter->modelname)) {
         // stop mask thread
@@ -137,18 +136,18 @@ static void obs_backscrub_update(void *state, obs_data_t *settings) {
         filter->maskctx = bs_maskgen_new(filter->modelname, BS_THREADS, filter->width, filter->height,
             obs_backscrub_dbg, nullptr, nullptr, nullptr, nullptr);
         if (!filter->maskctx) {
-            obs_printf("oops re-initialising backscrub\n");
+            obs_printf(filter, "oops re-initialising backscrub\n");
             return;
         }
         filter->new_frame = false;
         filter->done = false;
         filter->tid = std::thread(obs_backscrub_mask_thread, filter);
-        obs_printf("update(%p): done\n", filter);
+        obs_printf(filter, "update: done\n");
     }
 }
 static void obs_backscrub_destroy(void *state) {
     obs_backscrub_filter_t *filter = (obs_backscrub_filter_t *)state;
-    obs_printf("destroy(%p)\n", filter);
+    obs_printf(filter, "destroy\n");
     // stop mask thread
     filter->done = true;
     filter->new_frame = true;
@@ -158,7 +157,7 @@ static void obs_backscrub_destroy(void *state) {
     bs_maskgen_delete(filter->maskctx);
     free((char *)filter->modelname);
     delete filter;
-    obs_printf("destroy(%p): done\n", state);
+    obs_printf(state, "destroy(%p): done\n");
 }
 static void obs_backscrub_video_tick(void *state, float secs) { }
 static obs_source_frame *obs_backscrub_filter_video(void *state, obs_source_frame *frame) {
@@ -187,7 +186,7 @@ static obs_source_frame *obs_backscrub_filter_video(void *state, obs_source_fram
         break;
     }
     default:
-        obs_printf("filter_video: unsupported frame format: %s\n", get_video_format_name(frame->format));
+        obs_printf(filter, "filter_video: unsupported frame format: %s\n", get_video_format_name(frame->format));
         return frame;
     }
     // No mask yet?
@@ -227,7 +226,7 @@ static struct obs_source_info backscrub_src {
     .filter_video = obs_backscrub_filter_video       // process one input to one output frame
 };
 bool obs_module_load(void) {
-    obs_printf("load\n");
+    obs_printf(nullptr, "load\n");
     // here we take the opportunity to ensure dependent components (eg: libbackscrub) are loadable
     obs_register_source(&backscrub_src);
     return true;
