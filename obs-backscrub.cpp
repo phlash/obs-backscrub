@@ -16,6 +16,21 @@ static const size_t BS_WIDTH = 640;
 static const size_t BS_HEIGHT = 480;
 
 // debugging
+#ifdef WIN32
+// https://stackoverflow.com/questions/40159892/using-asprintf-on-windows
+static int vasprintf(char **msgp, const char *fmt, va_list ap) {
+	int len = _vscprintf(fmt, ap);
+	if (len<=0)
+		return len;
+	*msgp = (char *)malloc(len+1);
+	len = vsprintf_s(*msgp, len+1, fmt, ap);
+	if (len<=0) {
+		free(*msgp);
+		return len;
+	}
+	return len;
+}
+#endif
 static void obs_backscrub_dbg(void *ctx, const char *msg) {
     blog(LOG_INFO, "obs-backscrub(%p): %s", ctx, msg);
 }
@@ -225,24 +240,23 @@ static obs_source_frame *obs_backscrub_filter_video(void *state, obs_source_fram
     }
     return frame;
 }
-static struct obs_source_info backscrub_src {
-    // required
-    .id = "obs-backscrub",
-    .type = OBS_SOURCE_TYPE_FILTER,                  // this displays us in source filter dialog
-    .output_flags = OBS_SOURCE_ASYNC_VIDEO,          // this means we only need filter_video()
-    .get_name = obs_backscrub_get_name,              // this name is shown in source filter dialog
-    .create = obs_backscrub_create,                  // new instance of this filter
-    .destroy = obs_backscrub_destroy,                // delete filter instance
-    // optional
-    .get_defaults = obs_backscrub_get_defaults,      // set default property values
-    .get_properties = obs_backscrub_get_properties,  // defines user-adjustable properties (settings)
-    .update = obs_backscrub_update,                  // change the filter settings
-    .video_tick = obs_backscrub_video_tick,          // frame duration supplied (not absolute time)
-    .filter_video = obs_backscrub_filter_video       // process one input to one output frame
-};
+static struct obs_source_info backscrub_src;
 bool obs_module_load(void) {
     obs_printf(nullptr, "load");
     // here we take the opportunity to ensure dependent components (eg: libbackscrub) are loadable
+    // required
+    backscrub_src.id = "obs-backscrub";
+    backscrub_src.type = OBS_SOURCE_TYPE_FILTER;                  // this displays us in source filter dialog
+    backscrub_src.output_flags = OBS_SOURCE_ASYNC_VIDEO;          // this means we only need filter_video()
+    backscrub_src.get_name = obs_backscrub_get_name;              // this name is shown in source filter dialog
+    backscrub_src.create = obs_backscrub_create;                  // new instance of this filter
+    backscrub_src.destroy = obs_backscrub_destroy;                // delete filter instance
+    // optional
+    backscrub_src.get_defaults = obs_backscrub_get_defaults;      // set default property values
+    backscrub_src.get_properties = obs_backscrub_get_properties;  // defines user-adjustable properties (settings)
+    backscrub_src.update = obs_backscrub_update;                  // change the filter settings
+    backscrub_src.video_tick = obs_backscrub_video_tick;          // frame duration supplied (not absolute time)
+    backscrub_src.filter_video = obs_backscrub_filter_video;      // process one input to one output frame
     obs_register_source(&backscrub_src);
     return true;
 }
