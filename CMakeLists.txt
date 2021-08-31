@@ -10,10 +10,11 @@ find_package(Threads REQUIRED)
 if(NOT DEFINED BACKSCRUB)
         set(BACKSCRUB ../backscrub)
 endif()
-
-# Pull in backscrub and dependencies
-include(${BACKSCRUB}/build/BackscrubTargets.cmake)
-set(LIBBACKSCRUB_INCLUDE_DIR ${BACKSCRUB})
+set(CMAKE_MODULE_PATH "${BACKSCRUB}" CACHE PATH "Location of FindBackscrub.cmake")
+find_package(Backscrub REQUIRED)
+if(NOT BACKSCRUB_FOUND)
+        message(FATAL_ERROR "Missing Backscrub")
+endif()
 
 set(obs-backscrub_SOURCES
         obs-backscrub.cpp)
@@ -24,9 +25,9 @@ add_library(obs-backscrub MODULE
 set_target_properties(obs-backscrub PROPERTIES PREFIX "")
 
 target_include_directories(obs-backscrub
-        PUBLIC ${LIBBACKSCRUB_INCLUDE_DIR})
+        PUBLIC ${BACKSCRUB_INCLUDE})
 
 target_link_libraries(obs-backscrub
         ${LIBOBS_LIBRARIES}
-        backscrub
+        ${BACKSCRUB_LIBS}
         ${OpenCV_LIBS})
