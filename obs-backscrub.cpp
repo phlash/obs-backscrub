@@ -99,8 +99,9 @@ static void *obs_backscrub_create(obs_data_t *settings, obs_source_t *source) {
         obs_backscrub_dbg, nullptr, nullptr, nullptr, nullptr);
     if (!filter->maskctx) {
         obs_printf(filter, "oops initialising backscrub");
-        delete filter;
-        filter = NULL;
+        // if creation failed we still need to return a state,
+        // otherwise the user won't be able to fix the config.
+        return filter;
     }
     filter->new_frame = false;
     filter->done = false;
