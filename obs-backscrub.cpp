@@ -74,13 +74,14 @@ static void obs_backscrub_mask_thread(obs_backscrub_filter_t *filter) {
     }
     obs_printf(filter, "mask_thread: done");
 }
-static const char * _obs_backscrub_get_model(obs_data_t *settings) { return obs_data_get_string(settings, MODEL_SETTING); }
-static const char * _obs_backscrub_get_path(const char *file) {
-    // absolute paths return as-is
-    const char *rv = file;
+static char *_obs_backscrub_get_model(obs_data_t *settings) {
+    const char *settings_path = obs_data_get_string(settings, MODEL_SETTING);
+    char *rv = nullptr;
     // relative paths, map through module location
-    if (file[0]!='/')
-        rv = obs_module_file(file);
+    if (settings_path[0] == '/')
+        rv = bstrdup(settings_path);
+    else
+        rv = obs_module_file(settings_path);
     if (!rv)
         obs_printf(nullptr, "_get_path: NULL file mapping, maybe missing module data folder?");
     return rv;
@@ -91,15 +92,16 @@ static void *obs_backscrub_create(obs_data_t *settings, obs_source_t *source) {
     // and setting initial values for filter settings
     auto *filter = new obs_backscrub_filter_t;
     obs_printf(filter, "create");
-    filter->modelname = strdup(_obs_backscrub_get_path(_obs_backscrub_get_model(settings)));
+    filter->modelname = _obs_backscrub_get_model(settings);
     filter->width = BS_WIDTH;
     filter->height = BS_HEIGHT;
     filter->maskctx = bs_maskgen_new(filter->modelname, BS_THREADS, filter->width, filter->height,
         obs_backscrub_dbg, nullptr, nullptr, nullptr, nullptr);
     if (!filter->maskctx) {
         obs_printf(filter, "oops initialising backscrub");
-        delete filter;
-        filter = NULL;
+        // if creation failed we still need to return a state,
+        // otherwise the user won't be able to fix the config.
+        return filter;
     }
     filter->new_frame = false;
     filter->done = false;
@@ -120,19 +122,24 @@ static obs_properties_t *obs_backscrub_get_properties(void *state) {
 }
 static void obs_backscrub_update(void *state, obs_data_t *settings) {
     obs_backscrub_filter_t *filter = (obs_backscrub_filter_t *)state;
-    const char *model = _obs_backscrub_get_model(settings);
+    char *model = _obs_backscrub_get_model(settings);
     obs_printf(filter, "update: model: %s=>%s", filter->modelname, model);
     // here we change any filter settings (eg: model used, feathering edges, bilateral smoothing)
-    if (strcmp(model, filter->modelname)) {
+    if (!filter->modelname && !model) return; // both null, no change required
+    if (!filter->modelname || !model || strcmp(model, filter->modelname)) {
         // stop mask thread
-        filter->done = true;
-        filter->new_frame = true;
-        filter->cond.notify_one();
-        filter->tid.join();
+        if (filter->tid.joinable()) {
+            filter->done = true;
+            filter->new_frame = true;
+            filter->cond.notify_one();
+            filter->tid.join();
+        }
         // re-init backscrub and start thread again
-        bs_maskgen_delete(filter->maskctx);
-        free((char *)filter->modelname);
-        filter->modelname = strdup(_obs_backscrub_get_path(model));
+        if (filter->maskctx)
+            bs_maskgen_delete(filter->maskctx);
+        if (filter->modelname)
+            bfree(filter->modelname);
+        filter->modelname = model;
         filter->maskctx = bs_maskgen_new(filter->modelname, BS_THREADS, filter->width, filter->height,
             obs_backscrub_dbg, nullptr, nullptr, nullptr, nullptr);
         if (!filter->maskctx) {
@@ -143,19 +150,27 @@ static void obs_backscrub_update(void *state, obs_data_t *settings) {
         filter->done = false;
         filter->tid = std::thread(obs_backscrub_mask_thread, filter);
         obs_printf(filter, "update: done");
+    } else {
+        // if we get here, modelname and model are both non-null, so
+        // we need to free model because we didn't put it into filter.
+        bfree(model);
     }
 }
 static void obs_backscrub_destroy(void *state) {
     obs_backscrub_filter_t *filter = (obs_backscrub_filter_t *)state;
     obs_printf(filter, "destroy");
     // stop mask thread
-    filter->done = true;
-    filter->new_frame = true;
-    filter->cond.notify_one();
-    filter->tid.join();
+    if (filter->tid.joinable()) {
+        filter->done = true;
+        filter->new_frame = true;
+        filter->cond.notify_one();
+        filter->tid.join();
+    }
     // free memory
-    bs_maskgen_delete(filter->maskctx);
-    free((char *)filter->modelname);
+    if (filter->maskctx)
+        bs_maskgen_delete(filter->maskctx);
+    if (filter->modelname)
+        bfree(filter->modelname);
     delete filter;
     obs_printf(state, "destroy(%p): done");
 }
