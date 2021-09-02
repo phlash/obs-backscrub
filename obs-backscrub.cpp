@@ -128,10 +128,12 @@ static void obs_backscrub_update(void *state, obs_data_t *settings) {
     if (filter->modelname == model) return; // same pointer === same string
     if (!filter->modelname || !model || strcmp(model, filter->modelname)) {
         // stop mask thread
-        filter->done = true;
-        filter->new_frame = true;
-        filter->cond.notify_one();
-        filter->tid.join();
+        if (filter->tid.joinable()) {
+            filter->done = true;
+            filter->new_frame = true;
+            filter->cond.notify_one();
+            filter->tid.join();
+        }
         // re-init backscrub and start thread again
         if (filter->maskctx)
             bs_maskgen_delete(filter->maskctx);
@@ -154,10 +156,12 @@ static void obs_backscrub_destroy(void *state) {
     obs_backscrub_filter_t *filter = (obs_backscrub_filter_t *)state;
     obs_printf(filter, "destroy");
     // stop mask thread
-    filter->done = true;
-    filter->new_frame = true;
-    filter->cond.notify_one();
-    filter->tid.join();
+    if (filter->tid.joinable()) {
+        filter->done = true;
+        filter->new_frame = true;
+        filter->cond.notify_one();
+        filter->tid.join();
+    }
     // free memory
     if (filter->maskctx)
         bs_maskgen_delete(filter->maskctx);
