@@ -125,7 +125,8 @@ static void obs_backscrub_update(void *state, obs_data_t *settings) {
     char *model = _obs_backscrub_get_model(settings);
     obs_printf(filter, "update: model: %s=>%s", filter->modelname, model);
     // here we change any filter settings (eg: model used, feathering edges, bilateral smoothing)
-    if (strcmp(model, filter->modelname)) {
+    if (filter->modelname == model) return; // same pointer === same string
+    if (!filter->modelname || !model || strcmp(model, filter->modelname)) {
         // stop mask thread
         filter->done = true;
         filter->new_frame = true;
