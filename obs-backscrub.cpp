@@ -125,7 +125,7 @@ static void obs_backscrub_update(void *state, obs_data_t *settings) {
     char *model = _obs_backscrub_get_model(settings);
     obs_printf(filter, "update: model: %s=>%s", filter->modelname, model);
     // here we change any filter settings (eg: model used, feathering edges, bilateral smoothing)
-    if (filter->modelname == model) return; // same pointer === same string
+    if (!filter->modelname && !model) return; // both null, no change required
     if (!filter->modelname || !model || strcmp(model, filter->modelname)) {
         // stop mask thread
         if (filter->tid.joinable()) {
@@ -150,6 +150,10 @@ static void obs_backscrub_update(void *state, obs_data_t *settings) {
         filter->done = false;
         filter->tid = std::thread(obs_backscrub_mask_thread, filter);
         obs_printf(filter, "update: done");
+    } else {
+        // if we get here, modelname and model are both non-null, so
+        // we need to free model because we didn't put it into filter.
+        bfree(model);
     }
 }
 static void obs_backscrub_destroy(void *state) {
