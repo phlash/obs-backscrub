@@ -130,8 +130,10 @@ static void obs_backscrub_update(void *state, obs_data_t *settings) {
         filter->cond.notify_one();
         filter->tid.join();
         // re-init backscrub and start thread again
-        bs_maskgen_delete(filter->maskctx);
-        free((char *)filter->modelname);
+        if (filter->maskctx)
+            bs_maskgen_delete(filter->maskctx);
+        if (filter->modelname)
+            free((char *)filter->modelname);
         filter->modelname = strdup(_obs_backscrub_get_path(model));
         filter->maskctx = bs_maskgen_new(filter->modelname, BS_THREADS, filter->width, filter->height,
             obs_backscrub_dbg, nullptr, nullptr, nullptr, nullptr);
@@ -154,8 +156,10 @@ static void obs_backscrub_destroy(void *state) {
     filter->cond.notify_one();
     filter->tid.join();
     // free memory
-    bs_maskgen_delete(filter->maskctx);
-    free((char *)filter->modelname);
+    if (filter->maskctx)
+        bs_maskgen_delete(filter->maskctx);
+    if (filter->modelname)
+        free((char *)filter->modelname);
     delete filter;
     obs_printf(state, "destroy(%p): done");
 }
