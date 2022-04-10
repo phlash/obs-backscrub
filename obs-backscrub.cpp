@@ -10,7 +10,7 @@
 
 // Setting names & default values
 static const char MODEL_SETTING[] = "Segmentation model";
-static const char MODEL_DEFAULT[] = "selfiesegmentation_mlkit-256x256-2021_01_19-v1215.f16.tflite";
+static const char MODEL_DEFAULT[] = "selfie_segmentation_landscape.tflite";
 static const size_t BS_THREADS = 2;
 static const size_t BS_WIDTH = 640;
 static const size_t BS_HEIGHT = 480;
