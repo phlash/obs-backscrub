@@ -44,6 +44,7 @@ __NB: This is fiddly, fragile and poorly tested__
      C> lib /def:obs.def /out:OBS.LIB /machine:x64
      ```
    * Clone this project.
+   * Checkout `windows-build` branch.
    * In a `VS2019 Developer Command Prompt` Do the CMake dance, informing it where OpenCV and libobs are:
    ```cmd
    C> mkdir build
